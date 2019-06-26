@@ -17,6 +17,10 @@ drop unnecessary ids
 
 make a dictionary to describe the data
 
+continue following the tutorial:
+https://towardsdatascience.com/another-twitter-sentiment-analysis-with-python-part-2-333514854913
+The replacement method for batching in data visualization might be weird...
+
 
 
 
