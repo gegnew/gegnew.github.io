@@ -12,7 +12,8 @@ author: Gerrit Egnew
 description: a blag
 
 # URL of your avatar or profile pic (you could use your GitHub profile pic)
-avatar: /reverie/images/me.png
+avatar: images/me.png
+#this was '/reverie/images/me.png' but that didn't work...?
 
 #
 # Flags below are optional
