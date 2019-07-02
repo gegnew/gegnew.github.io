@@ -11,7 +11,7 @@ I'm copping this completely from [@glmdev's guide](https://medium.com/@glmdev/bu
 I actually am running through a second time based on [this kubernetes pi cluster tutorial](https://kubecloud.io/setting-up-a-kubernetes-1-11-raspberry-pi-cluster-using-kubeadm-952bbda329c8).
 Some other useful reading (that I haven't read yet) is [this Kubernetes blog post](https://kubernetes.io/blog/2018/03/apache-spark-23-with-native-kubernetes/) about running Apache Spark on Kubernetes and and [this Apache doc page](https://spark.apache.org/docs/2.3.0/running-on-kubernetes.html) on running Spark on Kubernetes.
 
-###Parts list
+###Parts list (get links from Johnny)
 - 4-8 Raspberry Pi 4 (for the compute nodes)
 - 1x Raspberry Pi 4 (for the master/login node)
 - 5-9 MicroSD Cards (Raspi4 already comes with a 16Gb card, but we probably need more storage)
@@ -21,56 +21,184 @@ Some other useful reading (that I haven't read yet) is [this Kubernetes blog pos
 - 1 big USB hard drive (or a NAS box?) for shared storage
 
 
-## Step 1: Flash the Pi's
-Flash the SD cards with Raspian Lite (or Arch? Whatever). 
-Before unmounting, we need to enable SSH. @glmdev says to open /boot and create an empty file called "ssh". @kubecloud says to make a `/Volumes/boot/ssh` file
-Interestingly, then @kubecloud says to `ssh pi@raspberrypi.local` rather then finding the ip as below
+## Step 1: Set up the Raspberry Pi's
+For fun, we decided to run the master and two worker nodes on Raspbian Lite and one worker node on Arch ARM. Setup for each as follows:
 
-## Step 2: Set up the network
-### Option 1: @glmdev
-We need to assign static IP addresses to the nodes. Plug the switch into the network and connect a Pi to the switch. 
-Then use `nmap` or `tshark` to find the Pi's IP address. For me, I think this will be `tshark -Y "ip.src==192.168.0.0/16 and ip.dst==192.168.0.0/16"`
-SSH into the pi with `ssh pi@ip.addr.here`. The default password is "raspberry".
+### Raspbian
+    1. download the Raspbian image from [here](https://www.raspberrypi.org/downloads/raspbian/)
+    2. verify the download by running `sha256sum [raspian_image.zip]` and comparing it to the hash on the downloads page
+    3. `unzip` the image file
+    4. insert sd card into computer
+    5. locate device with `lsblk` or `sudo fdisk -l`
+    6. ensure partitions are unmounted with `sudo fdisk /dev/sdX*`
+    7. copy the image file to the sd card with `sudo dd bs=4M status=progress if=[raspian_iso] of=/dev/sdX` 
 
-### Option 2: @kubecloud
-SSH to pi with `ssh pi@raspberrypi.local`. Run the script below with `sh hostname_and_ip.sh [new hostname] [new static IP] [router IP]`. This kinda seems easier.
+### Arch ARM
+Note that this is NOT the officially supported Arch Linux distribution, but one redesigned for ARM architectures.
+Follow the instructions [here](https://archlinuxarm.org/platforms/armv8/broadcom/raspberry-pi-3) under the "Installation" tab.
+After that, I completed the install using [this tutorial](https://elinux.org/ArchLinux_Install_Guide), except for the swap file section, where I did:
+
+TODO: finish this setup
+#DONT DO THIS
+
+    Set the swap file:
         ~~~~
-        #!/bin/sh
-
-        hostname=$1
-        ip=$2 # should be of format: 192.168.1.100
-        dns=$3 # should be of format: 192.168.1.1
-
-        # Change the hostname
-        sudo hostnamectl --transient set-hostname $hostname
-        sudo hostnamectl --static set-hostname $hostname
-        sudo hostnamectl --pretty set-hostname $hostname
-        sudo sed -i s/raspberrypi/$hostname/g /etc/hosts
-
-        # Set the static ip
-
-        sudo cat <<EOT >> /etc/dhcpcd.conf
-        interface eth0
-        static ip_address=$ip/24
-        static routers=$dns
-        static domain_name_servers=$dns
-        EOT
+        fallocate -l 1024M /swapfile
+        chmod 600 /swapfile
+        mkswap /swapfile
+        swapon /swapfile
+        echo 'vm.swappiness=1' > /etc/sysctl.d/99-sysctl.conf
         ~~~~
-@kubecloud sets the IPs as 192.168.1.100 for master, then X.101... for the nodes. Then reboot; you should be able to ssh to the pi like `ssh pi@[new hostname].local`
 
-### Option 1: @glmdev, doing it with SLURM
-## Step 3: Set up the Pi's
-Basic config: `sudo raspi-config`. Set the default password, locale, timezone, and expand the filesystem. Exit the setup utility.
-Set the hostname in some sort of sane fashion:
-~~~~
-sudo hostname node01    # make these names serial
-sudo vim /etc/hostname  # change the hostname here
-sudo vim /etc/hosts     # and here
-~~~~
+    8. Add color to pacman with `sed -i 's/#Color/Color/' /etc/pacman.conf`
 
+
+### Configure the Pi's
+I tried to enable ssh by placing an empty file called "ssh" in the /boot directory. This did not seem to work at all, so I plugged the Pi's into a monitor and used `sudo raspi-config`.
+Set the hostname, enable ssh, expand the filesystem, set the password, locale, and timezone.
 We need to make sure that the system time is correct. `ntpdate` will periodically sync the system time in the background. Install with `sudo apt install ntpdate -y` and reboot.
 
-## Step 4: Shared storage
+### Set up the network
+We did not set statis IPs for the Pi's, as we weren't worried about the IP leases being reassigned on our low-traffic local network. We might do this later.
+
+## Step 2: Set up Kubernetes
+Kubernetes tutorials (the first one largely copped below):
+[nycdev](https://medium.com/nycdev/k8s-on-pi-9cc14843d43)
+[@kubecloud](https://kubecloud.io/setting-up-a-kubernetes-1-11-raspberry-pi-cluster-using-kubeadm-952bbda329c8)
+[ITNEXT](https://itnext.io/building-a-kubernetes-cluster-on-raspberry-pi-and-low-end-equipment-part-1-a768359fbba3)
+
+After pi setup, [install docker](https://kubernetes.io/docs/setup/production-environment/container-runtimes/) and set permissions:
+`sudo apt-get update`
+`apt-get update && apt-get install apt-transport-https ca-certificates curl software-properties-common`
+
+Import the Docker GPG key:
+`curl -fsSL https://download.docker.com/linux/debian/gpg | sudo apt-key add -`
+
+`add-apt-repository` wasn't working, so I added the following in my `/etc/apt/sources.list`
+`deb [arch=amd64] https://download.docker.com/linux/debian stretch stable`
+
+Update again, then install Docker:
+`curl -sSL get.docker.com | sh`
+
+When we were working on this (June 30 2018), there was [an error](https://github.com/docker/for-linux/issues/709) in the docker package numbering (?) for debian distros. A helpful comment from @caio resulted in this solution for the curl command:
+~~~~
+sudo rm /etc/apt/sources.list.d/docker.list;
+curl -sL get.docker.com | sed 's/9)/10)/' | sh
+~~~~
+
+`sudo usermod -aG docker $USER`
+
+Kubernetes needs [swap disabled](https://github.com/kubernetes/kubernetes/pull/55399):
+~~~~
+sudo dphys-swapfile swapoff && \
+sudo dphys-swapfile uninstall && \
+sudo update-rc.d dphys-swapfile remove
+~~~~
+Then `sudo swapon --summary` should return empty
+
+For some reason, no guides we found suggested disabling `dphys-swapfile` with systemd, but we found it to be necessary:
+`sudo systemctl disable dphys-swapfile`
+
+Add the following line to the `/boot/cmdline.txt` file, in the same line as all the other text
+`cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory`
+For safety, `sudo cp /boot/cmdline.txt /boot/cmdline_backup.txt`.
+
+Add the GPG key: 
+`curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -`
+Note that if you have to run this with sudo, you need a sudo on both sides of the pipe.
+
+Then do:
+`echo deb http://apt.kubernetes.io/ kubernetes-xenial main | sudo tee /etc/apt/sources.list.d/kubernetes.list`
+Then `sudo apt-get update`.
+
+Install kubeadm, which will also install kubectl, with `sudo apt-get install -y kubeadm` and reboot.
+
+That is the common setup. 
+
+### Master node setup:
+Next, on only the master node:
+
+Pull images:
+`sudo kubeadm config images pull -v3`
+
+Use Weave Net as a network overlay:
+`sudo kubeadm init --token-ttl=0`
+This sets our token to never expire, which SHOULD NOT be done in production.
+Alternatively, ITNEXT suggests initializing kubernetes with the `--pod-network-cidr=10.244.0.0/16` flag (and no `sudo`, for some reason). I need to look into what that flag does.
+
+`kubeadm` pulls docker images for kubernetes master components, generates [PKI certificates](https://kubernetes.io/docs/setup/certificates/) and starts services. It returns a snippet of code to run after, like 15 minutes:
+~~~~
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+~~~~
+
+You can check that this worked with `kubectl get node`.
+
+### Install ingress controller (worker node)
+Run `kubeadm token create --print-join-command` to get the join token. 
+You will see the join-token, which you need for other nodes to join the network. It will look like this:
+`kubeadm join --token 9e700f.7dc97f5e3a45c9e5 192.168.0.27:6443 --discovery-token-ca-cert-hash sha256:95cbb9ee5536aa61ec0239d6edd8598af68758308d0a0425848ae1af28859bea`
+Run this command on each node and check the status by running `kubectl get nodes` (or maybe get node). You will note that the status is "NotReady", as we have not yet set up container networking.
+
+In case that doesn't work, `kubeadm token list` will get the available tokens and the following will get the sha has:
+`openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'`
+
+At this point, we ran into a problem with Docker not starting due to some problem with [dual config files](https://github.com/moby/moby/issues/34104). Johnny fixed it by adding the following line in `/lib/systemd/system/docker.service` to use systemd:
+`ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock --exec-opt native.cgroupdriver=systemd`
+
+I solved it by changing the ExecStart statment to be `ExecStart=/usr/bin/dockerd`. After this, I got an error from `kubeadm join` suggesting I follow [this guide](https://kubernetes.io/docs/setup/production-environment/container-runtimes/) to change the Docker cgroup driver from cgroupfs to systemd.
+Actually, as of 1am on 7/2, I haven't actually fixed this, but I did give up on the node I was working on.
+
+
+
+Install the Weave Net network driver:
+    `kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')"`
+    On the master AND all the workers run:
+    `sudo sysctl net.bridge.bridge-nf-call-iptables=1`
+
+ITNEXT suggests using [flannel](https://github.com/coreos/flannel) instead, but same idea:
+`kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/v0.11.0/Documentation/kube-flannel.yml`. Maybe check the latest version of flannel before running this.
+
+
+### Additional steps:
+We can access the cluster, but only while SSHed to the master node. To access it from our local machine, do:
+`scp pi@x.x.x.100:.kube/config .`
+to copy the config file from the master node to your computer
+
+If you have kubectl on your local machine, you can set `kubeconfig` up by either a) overriding the `config` file in `$HOME/.kube/config` or add the new config file on top of it by:
+`export KUBECONFIG=<location to config from pi>:$HOME/.kube/config`
+More info on this [here](https://kubernetes.io/docs/tasks/access-application-cluster/configure-access-multiple-clusters/).
+
+# Internet Gateways
+The [OSI model](https://en.wikipedia.org/wiki/OSI_model#Layer_1:_Physical_Layer) is a conceptual model of a computing system. From bottom to top:
+    1. Physical Layer - Responsible for transmission of data between a device and a transimssion medium. 
+    2. Data Link Layer - Provides node-to-node data transfer.
+    3. Network Layer - Provides means of transferring data ("packets") from one node to another connected in different networks. 
+    4. Transport Layer - Provides means of transferring data from a source to a destination host.
+    5. Session Layer - Controls the connections between computers, establishing, managing, and terminating connections between local and remote application.
+    6. Presentation Layer - Establishes context between application-layer entities.
+    7. Application Layer - This layer and the user both interact directly with the software application. Communication component.
+    
+An internet gateway is a hardware/software system intended to provide network connectivity from the public internet to a private network at OSI Level 4. This can be done wtih [Network address translation (NAT)](https://en.wikipedia.org/wiki/Network_address_translation) or various proxy servers (i.e. HAProxy, nginx). I have no idea what any of this means.
+
+
+# Deploying a test app on your Kubernetes cluster
+
+Install [minikube](https://kubernetes.io/docs/setup/minikube/) locally to test your setup before deploying to your cluster.
+
+
+
+
+
+
+
+
+## Shared storage
+We will set up freddie as a network filesystem (NFS) later, but she isn't hooked up right now, so we'll save it for later.
+
+It will go as follows:
+
 For the cluster to be a cluster, a job should be able to run on any node; therefore every node must access the same files. We can use a hard drive connected to the master node and then export the drive as a network file system (NFS). We could use freddie as our master node and our shared file system, if we feel like it. Alternatively, we could use a NAS box as our NFS, by exporting an NFS share from the NAS and mounting it on the nodes. I'll assume we're using a Pi the master node and an external HD as our shared storage.
 
 SSH into the master node. Connect the shared storage drive and format as ext4: `sudo mkfs.ext4 /dev/sda1` or whatever it might be.
@@ -97,129 +225,4 @@ On all the other nodes, install `nfs-common` instead of `nfs-kernel-server`. Cre
 `<master node ip>:/clusterfs    /clusterfs  nfs defaults    0 0`
 Mount the drive. Test it by creating a file in /clusterfs on one node and check to see if it shows up on the other nodes.
 
-## Step 5: Configure the master node
-Most clusters use a scheduler, which will accept jobs and run them on the next available set of nodes. We will use SLURM as our scheduler on the master node.
-
-SSH into the master node and edit the `/etc/hosts` file. Add lines like below, which are the ip addresses and hostnames of the nodes, which will make resolution easier.
-~~~~
-\<ip addr of node02>    node02
-\<ip addr of node03>    node03
-\<ip addr of node03>    node03
-~~~~
-
-Install the SLURM controller packages, `slurm-wlm`. The default SLURM config is in `/usr/share/doc/slurm-client/examples/slurm.conf.simple.gz`; copy it to `/etc/slurm-llnl` and unzip it with `gzip -d`. Rename it with `mv slurm.conf.simple slurm.conf`. You should have a file:`/etc/slurm-llnl/slurm.conf`. Modify the first two configuration lines to include the master node hostname and IP:
-~~~~
-ControlMachine=node01
-ControlAddr=\<node01 ip addr>
-~~~~
-
-SLURM can allocate resources in a variety of ways (check SLURM documentation), but we'll use the "consumable resources" method. To do this, edit the `SelectType` field to:
-~~~~
-SelectType=select/cons\_res
-SelectTypeParameters=CR\_CPU
-~~~~
-
-In the "LOGGING AND ACCOUNTING" section you can change the ClusterName parameter. Give your cluster a name.
-
-Add the nodes to the SLURM config by deleting the example entry (near the end of the config file) and replacing it with your nodes:
-~~~~
-NodeName=node01 NodeAddr=\<ip addr node01> CPUs=4 State=UNKNOWN
-NodeName=node02 NodeAddr=\<ip addr node02> CPUs=4 State=UNKNOWN
-NodeName=node03 NodeAddr=\<ip addr node03> CPUs=4 State=UNKNOWN
-NodeName=node04 NodeAddr=\<ip addr node04> CPUs=4 State=UNKNOWN
-~~~~
-Apparently, this includes the master node.
-
-SLURM runs jobs on partitions, i.e. groups of nodes, so we can set a default partition with all of our compute nodes on it. Delete the example partition in the file, then add the following:
-`PartitionName=mycluster Nodes=node[02-04] Default=YES MaxTime=INFINITE State=UP`
-
-# Option 2: Kubernetes
-Kubernetes tutorials (the first one largely copped below):
-[nycdev](https://medium.com/nycdev/k8s-on-pi-9cc14843d43)
-[@kubecloud](https://kubecloud.io/setting-up-a-kubernetes-1-11-raspberry-pi-cluster-using-kubeadm-952bbda329c8)
-[ITNEXT](https://itnext.io/building-a-kubernetes-cluster-on-raspberry-pi-and-low-end-equipment-part-1-a768359fbba3)
-
-After pi setup, install docker and set permissions:
-~~~~
-curl -sSL get.docker.com | sh && \
-sudo usermod pi -aG docker && \
-newgrp docker
-~~~~
-
-Kubernetes needs [swap disabled](https://github.com/kubernetes/kubernetes/pull/55399):
-~~~~
-sudo dphys-swapfile swapoff && \
-sudo dphys-swapfile uninstall && \
-sudo update-rc.d dphys-swapfile remove
-~~~~
-Then `sudo swapon --summary` should return empty
-
-[nycdev](https://medium.com/nycdev/k8s-on-pi-9cc14843d43) says to add the following line to the `/boot/cmdline.txt` file, in the same line as all the other text,  but the @kubecloud tutorial does not. ITNEXT also says to do this.
-`cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory`
-Then reboot.
-
-SSH in again and edit `/etc/apt/sources.list.d/kubernetes.list`, adding `deb http://apt.kubernetes.io/ kubernetes-xenial main` to the file.
-Then add the key:
-`curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -`
-
-Update the repo with `sudo apt-get update`.
-
-Install `kubeadm`, which will also install `kubectl`:
-`sudo apt-get install -qy kubeadm`
-
-
-That is the common setup. 
-
-### Master node setup:
-Next, on only the master node:
-
-Pull images:
-`sudo kubeadm config images pull -v3`
-
-Use Weave Net as a network overlay:
-`sudo kubeadm init --token-ttl=0`
-This sets our token to never expire, which SHOULD NOT be done in production.
-Alternatively, ITNEXT suggests initializing kubernetes with the `--pod-network-cidr=10.244.0.0/16` flag (and no `sudo`, for some reason). I need to look into what that flag does.
-
-`kubeadm` pulls docker images for kubernetes master components, generates [PKI certificates](https://kubernetes.io/docs/setup/certificates/) and starts services. It returns a snippet of code to run after, like 15 minutes:
-~~~~
-mkdir -p $HOME/.kube
-sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
-sudo chown $(id -u):$(id -g) $HOME/.kube/config
-~~~~
-
-You can check that this worked with `kubectl get node`.
-
-### Worker node setup:
-Run `kubeadm token create --print-join-command` to get the join token. 
-You will see the join-token, which you need for other nodes to join the network. It will look like this:
-`kubeadm join --token 9e700f.7dc97f5e3a45c9e5 192.168.0.27:6443 --discovery-token-ca-cert-hash sha256:95cbb9ee5536aa61ec0239d6edd8598af68758308d0a0425848ae1af28859bea`
-Run this command on each node and check the status by running `kubectl get nodes` (or maybe get node). You will note that the status is "NotReady", as we have not yet set up container networking.
-
-In case that doesn't work, `kubeadm token list` will get the available tokens and the following will get the sha has:
-`openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'`
-
-Install the Weave Net network driver:
-    `kubectl apply -f "https://cloud.weave.works/k8s/net?k8s-version=$(kubectl version | base64 | tr -d '\n')"`
-    On the master AND all the workers run:
-    `sudo sysctl net.bridge.bridge-nf-call-iptables=1`
-
-ITNEXT suggests using [flannel](https://github.com/coreos/flannel) instead, but same idea:
-`kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/v0.11.0/Documentation/kube-flannel.yml`. Maybe check the latest version of flannel before running this.
-
-
-### Additional steps:
-We can access the cluster, but only while SSHed to the master node. To access it from our local machine, do:
-`scp pi@x.x.x.100:.kube/config .`
-to copy the config file from the master node to your computer
-
-If you have kubectl on your local machine, you can set `kubeconfig` up by either a) overriding the `config` file in `$HOME/.kube/config` or add the new config file on top of it by:
-`export KUBECONFIG=<location to config from pi>:$HOME/.kube/config`
-More info on this [here](https://kubernetes.io/docs/tasks/access-application-cluster/configure-access-multiple-clusters/).
-
-
-# Deploying a test app on your Kubernetes cluster
-
-
-### Other thoughts from other tutorials:
-Kubernetes only requires that you enable an official apt repostitory (from apt.kubernetes.io) and install kubelet, kubeadm, docker, and kubectl(only on master)
+After setting up k8s, [this doc page](https://docs.docker.com/ee/ucp/kubernetes/storage/use-nfs-volumes/) and [this tutorial](https://matthewpalmer.net/kubernetes-app-developer/articles/kubernetes-volumes-example-nfs-persistent-volume.html) should be helpful.
