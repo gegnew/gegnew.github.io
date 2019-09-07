@@ -88,6 +88,24 @@ curl -sL get.docker.com | sed 's/9)/10)/' | sh
 
 `sudo usermod -aG docker $USER`
 
+We also need to change the cgroup driver to systemd:
+~~~~
+cat > /etc/docker/daemon.json \<\<EOF
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+~~~~
+
+# Restart docker.
+systemctl daemon-reload
+systemctl restart docker
+
 Kubernetes needs [swap disabled](https://github.com/kubernetes/kubernetes/pull/55399):
 ~~~~
 sudo dphys-swapfile swapoff && \
@@ -103,7 +121,7 @@ Add the following line to the `/boot/cmdline.txt` file, in the same line as all 
 `cgroup_enable=cpuset cgroup_memory=1 cgroup_enable=memory`
 For safety, `sudo cp /boot/cmdline.txt /boot/cmdline_backup.txt`.
 
-Add the GPG key: 
+Add the Kubernetes GPG key: 
 `curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -`
 Note that if you have to run this with sudo, you need a sudo on both sides of the pipe.
 
@@ -135,21 +153,19 @@ sudo chown $(id -u):$(id -g) $HOME/.kube/config
 
 You can check that this worked with `kubectl get node`.
 
-### Install ingress controller (worker node)
 Run `kubeadm token create --print-join-command` to get the join token. 
 You will see the join-token, which you need for other nodes to join the network. It will look like this:
 `kubeadm join --token 9e700f.7dc97f5e3a45c9e5 192.168.0.27:6443 --discovery-token-ca-cert-hash sha256:95cbb9ee5536aa61ec0239d6edd8598af68758308d0a0425848ae1af28859bea`
-Run this command on each node and check the status by running `kubectl get nodes` (or maybe get node). You will note that the status is "NotReady", as we have not yet set up container networking.
+
+### Install ingress controller (worker node)
+Run the `kubeadm join`  command on each node with the token generated on the master node and check the status by running `kubectl get nodes` (or maybe get node). You will note that the status is "NotReady", as we have not yet set up container networking.
 
 In case that doesn't work, `kubeadm token list` will get the available tokens and the following will get the sha has:
 `openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt | openssl rsa -pubin -outform der 2>/dev/null | openssl dgst -sha256 -hex | sed 's/^.* //'`
 
-At this point, we ran into a problem with Docker not starting due to some problem with [dual config files](https://github.com/moby/moby/issues/34104). Johnny fixed it by adding the following line in `/lib/systemd/system/docker.service` to use systemd:
+Because we added the `daemon.json` config above, we shouldn't have a problem with Docker not starting due to some problem with [dual config files](https://github.com/moby/moby/issues/34104). However, our first time through we did have this issue. Johnny fixed it by adding the following line in `/lib/systemd/system/docker.service` to use systemd:
 `ExecStart=/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock --exec-opt native.cgroupdriver=systemd`
-
-I solved it by changing the ExecStart statment to be `ExecStart=/usr/bin/dockerd`. After this, I got an error from `kubeadm join` suggesting I follow [this guide](https://kubernetes.io/docs/setup/production-environment/container-runtimes/) to change the Docker cgroup driver from cgroupfs to systemd.
-Actually, as of 1am on 7/2, I haven't actually fixed this, but I did give up on the node I was working on.
-
+[This kube documentation](https://kubernetes.io/docs/setup/production-environment/container-runtimes/) shows the correct docker setup, in case you run into this problem.
 
 
 Install the Weave Net network driver:
@@ -160,11 +176,24 @@ Install the Weave Net network driver:
 ITNEXT suggests using [flannel](https://github.com/coreos/flannel) instead, but same idea:
 `kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/v0.11.0/Documentation/kube-flannel.yml`. Maybe check the latest version of flannel before running this.
 
+### Install the Kubernetes dashboard
+To install the [kubernetes dashboard](https://github.com/kubernetes/dashboard), simply run:
+`$ kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v1.10.1/src/deploy/recommended/kubernetes-dashboard.yaml`
+To access the dashboard locally, create a secure channel to the cluster with `kubectl proxy`.
+
+Accessing the dashboard from a remote client is a bit more complicated. Start by editing the `kubernetes-dashboard` service:
+`kubectl -n kube-system edit service kubernetes-dashboard`
+
+In this file, change the `type: ClusterIP` to `type: NodePort`, save and quit.
+Then run `kubectl -n kube-system get service kubernetes-dashboard`
+Run `kubectl proxy` and then browse to `https://<external-ip>`, where \<external-ip> is returned by the above command.
 
 ### Additional steps:
 We can access the cluster, but only while SSHed to the master node. To access it from our local machine, do:
 `scp pi@x.x.x.100:.kube/config .`
 to copy the config file from the master node to your computer
+
+#################################
 
 If you have kubectl on your local machine, you can set `kubeconfig` up by either a) overriding the `config` file in `$HOME/.kube/config` or add the new config file on top of it by:
 `export KUBECONFIG=<location to config from pi>:$HOME/.kube/config`
